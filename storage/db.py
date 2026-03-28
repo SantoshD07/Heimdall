@@ -1,3 +1,23 @@
+"""
+storage/db.py — Supabase database helpers for Heimdall.
+
+All reads and writes to Supabase go through this module.  Nothing outside
+this file should import the Supabase client directly.
+
+Two-table pattern:
+    raw_saves        — immutable inbox; written instantly when a message
+                       arrives, before any processing starts.  The pipeline
+                       only updates the ``status`` and ``error_msg`` columns.
+    classified_saves — enriched knowledge; written only after the full
+                       pipeline (extraction + classification) succeeds.
+                       References raw_saves.id as a foreign key.
+
+Client initialisation:
+    The Supabase client is created lazily on first use and reused for the
+    lifetime of the process.  Environment variables are read at call time so
+    the module can be imported before .env is loaded.
+"""
+
 from __future__ import annotations
 
 import os
@@ -8,6 +28,7 @@ _client: Client | None = None
 
 
 def _get_client() -> Client:
+    """Return the shared Supabase client, creating it on first call."""
     global _client
     if _client is None:
         url = os.environ["SUPABASE_URL"]
@@ -16,6 +37,10 @@ def _get_client() -> Client:
     return _client
 
 
+# ---------------------------------------------------------------------------
+# raw_saves
+# ---------------------------------------------------------------------------
+
 def insert_raw(
     *,
     user_id: int,
@@ -23,6 +48,21 @@ def insert_raw(
     raw_content: str | None = None,
     file_id: str | None = None,
 ) -> dict:
+    """
+    Insert a new row into ``raw_saves`` with status 'pending'.
+
+    Called immediately when a Telegram message arrives — before any processing
+    so the save is never lost even if the pipeline fails.
+
+    Args:
+        user_id:      Telegram user ID of the sender.
+        content_type: One of 'url', 'screenshot', or 'note'.
+        raw_content:  The raw text or URL (None for screenshots).
+        file_id:      Telegram file_id (only set for screenshots).
+
+    Returns:
+        The inserted row as a dict (includes the generated ``id`` UUID).
+    """
     row = {
         "user_id": user_id,
         "content_type": content_type,
@@ -32,3 +72,44 @@ def insert_raw(
     }
     result = _get_client().table("raw_saves").insert(row).execute()
     return result.data[0]
+
+
+def get_raw_save(raw_id: str) -> dict | None:
+    """
+    Fetch a single row from ``raw_saves`` by its UUID.
+
+    Args:
+        raw_id: UUID string of the row.
+
+    Returns:
+        Row dict if found, None if the row does not exist.
+    """
+    result = (
+        _get_client()
+        .table("raw_saves")
+        .select("*")
+        .eq("id", raw_id)
+        .maybe_single()
+        .execute()
+    )
+    return result.data
+
+
+def update_raw_status(raw_id: str, status: str, *, error_msg: str | None = None) -> None:
+    """
+    Update the ``status`` (and optionally ``error_msg``) of a ``raw_saves`` row.
+
+    Called by the Celery task to track pipeline progress:
+        pending     → processing  (task picked up the row)
+        processing  → done        (pipeline completed successfully)
+        processing  → failed      (all retries exhausted)
+
+    Args:
+        raw_id:    UUID of the row to update.
+        status:    New status value ('processing', 'done', or 'failed').
+        error_msg: Optional error description stored when status='failed'.
+    """
+    patch = {"status": status}
+    if error_msg is not None:
+        patch["error_msg"] = error_msg
+    _get_client().table("raw_saves").update(patch).eq("id", raw_id).execute()

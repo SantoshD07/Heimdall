@@ -7,6 +7,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from storage.db import insert_raw
+from pipeline.tasks import process_save
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,14 @@ async def handle_message(update: Update, _ctx) -> None:
     if message.photo:
         file_id = message.photo[-1].file_id  # highest resolution
         row = insert_raw(user_id=user_id, content_type="screenshot", file_id=file_id)
+        process_save.delay(row["id"])  # enqueue into Redis for async processing
         await message.reply_text(f"Screenshot saved. (id: {row['id']})")
 
     elif message.text:
         text = message.text
         content_type = "url" if _URL_RE.search(text) else "note"
         row = insert_raw(user_id=user_id, content_type=content_type, raw_content=text)
+        process_save.delay(row["id"])  # enqueue into Redis for async processing
         label = "URL" if content_type == "url" else "Note"
         await message.reply_text(f"{label} saved. (id: {row['id']})")
 
