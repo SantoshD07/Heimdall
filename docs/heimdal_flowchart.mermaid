@@ -1,0 +1,59 @@
+flowchart TD
+    A([User sends message on Telegram]) --> B{Message type?}
+
+    B -->|URL| C[Extract URL from message]
+    B -->|Screenshot| D[Get Telegram CDN file path]
+    B -->|Plain text| E[Use raw text as-is]
+
+    C --> F
+    D --> F
+    E --> F
+
+    F[["insert_raw( )\nraw_saves table · status = pending\ncelery_task_id stored"]]
+
+    F -->|immediate ack| G["Bot replies\n'Got it, classifying...'"]
+    F -->|enqueue| H[["process_save.delay( )\nPush job to Redis queue"]]
+
+    H --> I["Celery worker picks up job\nstatus = processing"]
+
+    I --> J[["Orchestrator Agent\nGemini 2.0 Flash\ninspects type → routes to sub-agent"]]
+
+    J -->|type = url| K[["Fetcher Agent\ntool: fetch_url\nTrafilatura → clean article text"]]
+    J -->|type = screenshot| L[["Vision Agent\ntool: ocr_image\nGoogle Vision API → extracted text"]]
+    J -->|type = note| M[["Note Agent\nvalidate + clean\nplain text passthrough"]]
+
+    K -->|extracted text| N
+    L -->|extracted text| N
+    M -->|extracted text| N
+
+    N[["Classifier Agent\nGemini 2.0 Flash\ntitle · summary · key insight\ncategory · tags\ntool: write_classified( )"]]
+
+    N --> O{Classification\nsucceeded?}
+
+    O -->|yes| P[["insert_classified( )\nwrite to classified_saves\nupdate raw_saves status = done"]]
+    O -->|no| Q["Mark status = failed\nretry_count + 1\nCelery retry with backoff"]
+
+    Q -->|retry_count < 3| J
+    Q -->|retry_count >= 3| R(["Notify user\n'Could not classify, please retry'"])
+
+    P --> S(["Bot sends confirmation\ntitle · category · insight · tags"])
+
+    style A fill:#D3D1C7,stroke:#5F5E5A,color:#2C2C2A
+    style B fill:#D3D1C7,stroke:#5F5E5A,color:#2C2C2A
+    style C fill:#9FE1CB,stroke:#0F6E56,color:#04342C
+    style D fill:#9FE1CB,stroke:#0F6E56,color:#04342C
+    style E fill:#9FE1CB,stroke:#0F6E56,color:#04342C
+    style F fill:#9FE1CB,stroke:#0F6E56,color:#04342C
+    style G fill:#C0DD97,stroke:#3B6D11,color:#173404
+    style H fill:#FAC775,stroke:#854F0B,color:#412402
+    style I fill:#FAC775,stroke:#854F0B,color:#412402
+    style J fill:#AFA9EC,stroke:#534AB7,color:#26215C
+    style K fill:#CECBF6,stroke:#534AB7,color:#26215C
+    style L fill:#CECBF6,stroke:#534AB7,color:#26215C
+    style M fill:#CECBF6,stroke:#534AB7,color:#26215C
+    style N fill:#AFA9EC,stroke:#534AB7,color:#26215C
+    style O fill:#D3D1C7,stroke:#5F5E5A,color:#2C2C2A
+    style P fill:#F5C4B3,stroke:#993C1D,color:#4A1B0C
+    style Q fill:#F7C1C1,stroke:#A32D2D,color:#501313
+    style R fill:#F7C1C1,stroke:#A32D2D,color:#501313
+    style S fill:#D3D1C7,stroke:#5F5E5A,color:#2C2C2A
