@@ -20,6 +20,9 @@ Process model:
 
 Starting workers (separate terminal):
     celery -A celery_app worker --loglevel=info --concurrency=4
+
+    On Windows, billiard cannot fork processes so use --pool=solo:
+    celery -A celery_app worker --loglevel=info --pool=solo
 """
 
 from __future__ import annotations
@@ -62,4 +65,7 @@ celery.conf.update(
     # If a worker crashes mid-task, put the task back in the queue once.
     task_reject_on_worker_lost=True,
     timezone="UTC",
+    # On Windows, billiard cannot fork processes — solo pool runs tasks in the
+    # same process to avoid the ValueError('not enough values to unpack') error.
+    worker_pool="solo",
 )
