@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
+from storage.db import insert_raw
+
 logger = logging.getLogger(__name__)
+
+_URL_RE = re.compile(r"https?://\S+")
 
 
 async def start(update: Update, _ctx) -> None:
@@ -20,25 +25,29 @@ async def handle_message(update: Update, _ctx) -> None:
     if not message:
         return
 
-    if message.text:
-        content_type = "note"
-        preview = message.text[:80]
-    elif message.photo:
-        content_type = "screenshot"
-        preview = "<image>"
-    elif message.document:
-        content_type = "document"
-        preview = message.document.file_name or "<file>"
+    user_id = message.from_user.id
+
+    if message.photo:
+        file_id = message.photo[-1].file_id  # highest resolution
+        row = insert_raw(user_id=user_id, content_type="screenshot", file_id=file_id)
+        await message.reply_text(f"Screenshot saved. (id: {row['id']})")
+
+    elif message.text:
+        text = message.text
+        content_type = "url" if _URL_RE.search(text) else "note"
+        row = insert_raw(user_id=user_id, content_type=content_type, raw_content=text)
+        label = "URL" if content_type == "url" else "Note"
+        await message.reply_text(f"{label} saved. (id: {row['id']})")
+
     else:
         await message.reply_text("I can handle text, URLs, and images for now.")
         return
 
-    logger.info("Received %s from user %s", content_type, message.from_user.id)
-    await message.reply_text(f"Got it! Saving your {content_type}: {preview}\n\n(Processing pipeline not wired yet.)")
+    logger.info("Saved %s for user %s → %s", row["content_type"], user_id, row["id"])
 
 
 def build_application(token: str) -> Application:
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).updater(None).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     return app
