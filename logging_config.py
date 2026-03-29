@@ -1,31 +1,29 @@
 """
-logging_config.py — Shared logging setup for Heimdall services.
+logging_config.py — Logging setup for the FastAPI web service.
 
-Each service (web, worker) writes to its own rotating log file under logs/
-and also outputs to stdout.  Call setup_logging() once at process startup.
+Called once at startup in main.py.  Writes to logs/web.log (rotating).
 
-Log files:
-    logs/web.log    — FastAPI / webhook requests
-    logs/worker.log — Celery task execution, extraction, classification
+The Celery worker does NOT use this — its logs are routed to logs/worker.log
+via the --logfile flag passed on the command line:
+    celery -A celery_app worker --loglevel=info --pool=solo --logfile=logs/worker.log
 """
 
 from __future__ import annotations
 
 import logging
 import logging.handlers
-import os
 from pathlib import Path
 
 
 def setup_logging(service: str) -> None:
     """
-    Configure logging for the given service.
+    Configure root logger for the given service.
 
-    Creates logs/ directory if needed, sets up a rotating file handler
-    (10 MB max, 5 backups) and a stdout stream handler.
+    Creates logs/ directory if needed, attaches a rotating file handler
+    (10 MB / 5 backups) and a stdout stream handler.
 
     Args:
-        service: 'web' or 'worker' — determines the log file name.
+        service: 'web' — determines the log file name (logs/web.log).
     """
     logs_dir = Path(__file__).parent / "logs"
     logs_dir.mkdir(exist_ok=True)
@@ -39,7 +37,7 @@ def setup_logging(service: str) -> None:
 
     file_handler = logging.handlers.RotatingFileHandler(
         log_file,
-        maxBytes=10 * 1024 * 1024,  # 10 MB
+        maxBytes=10 * 1024 * 1024,
         backupCount=5,
         encoding="utf-8",
     )
@@ -53,7 +51,6 @@ def setup_logging(service: str) -> None:
     root.addHandler(file_handler)
     root.addHandler(stream_handler)
 
-    # Silence noisy third-party loggers
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)

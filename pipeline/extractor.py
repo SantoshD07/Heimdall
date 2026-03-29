@@ -52,6 +52,7 @@ def extract_url(url: str) -> tuple[str, str]:
             logger.warning("[extractor] trafilatura.extract returned empty for %s", url)
         else:
             logger.info("[extractor] URL extraction OK — %d chars from %s", len(text), domain)
+            logger.info("[extractor] Extracted text preview: %s", text[:300].replace("\n", " "))
         return text[:5000], domain
     except Exception as exc:
         logger.warning("[extractor] URL extraction failed for %s: %s", url, exc)
@@ -72,6 +73,7 @@ def extract_note(raw_content: str) -> str:
     """
     text = " ".join(raw_content.split())[:5000]
     logger.info("[extractor] Note passthrough — %d chars", len(text))
+    logger.info("[extractor] Note content: %s", text[:300])
     return text
 
 
@@ -114,7 +116,7 @@ def extract_screenshot(file_id: str) -> str:
 
         # Gemini Vision OCR
         genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content([
             "Extract all text visible in this image verbatim. "
             "Return only the extracted text with no commentary.",
@@ -123,6 +125,7 @@ def extract_screenshot(file_id: str) -> str:
         text = (response.text or "").strip()
         if text:
             logger.info("[extractor] OCR OK — %d chars extracted", len(text))
+            logger.info("[extractor] OCR text preview: %s", text[:300].replace("\n", " "))
         else:
             logger.warning("[extractor] OCR returned empty text for file_id=%s", file_id)
         return text

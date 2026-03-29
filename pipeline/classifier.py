@@ -56,7 +56,7 @@ def classify(*, text: str, content_type: str) -> dict:
     """
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
     model = genai.GenerativeModel(
-        "gemini-1.5-flash",
+        "gemini-2.5-flash",
         generation_config=genai.GenerationConfig(
             response_mime_type="application/json",
         ),
@@ -67,6 +67,7 @@ def classify(*, text: str, content_type: str) -> dict:
         return _empty_classification(content_type)
 
     logger.info("[classifier] Sending %d chars to Gemini (type=%s)", len(text), content_type)
+    logger.info("[classifier] Input text preview: %s", text[:300].replace("\n", " "))
     prompt = _PROMPT_TEMPLATE.format(
         categories=", ".join(_CATEGORIES),
         content_type=content_type,
@@ -89,6 +90,8 @@ def classify(*, text: str, content_type: str) -> dict:
             "[classifier] Classification OK — title=%r  category=%s  tags=%s",
             classified["title"], classified["category"], classified["tags"],
         )
+        logger.info("[classifier] Summary: %s", classified["summary"])
+        logger.info("[classifier] Key insight: %s", classified["key_insight"])
         return classified
 
     except ResourceExhausted as exc:
