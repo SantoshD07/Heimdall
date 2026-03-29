@@ -7,14 +7,13 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
 from telegram import Update
 
-from bot.handlers import build_application
-
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-)
+from logging_config import setup_logging  # noqa: E402  (must be after load_dotenv)
+setup_logging("web")
+
+from bot.handlers import build_application  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]

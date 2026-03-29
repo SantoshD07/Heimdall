@@ -41,13 +41,20 @@ def extract_url(url: str) -> tuple[str, str]:
         text is empty string if the page could not be fetched or parsed.
     """
     domain = urlparse(url).netloc.replace("www.", "")
+    logger.info("[extractor] Fetching URL: %s", url)
     try:
         downloaded = trafilatura.fetch_url(url)
+        if not downloaded:
+            logger.warning("[extractor] trafilatura.fetch_url returned empty for %s", url)
+            return "", domain
         text = trafilatura.extract(downloaded) or ""
-        logger.info("Extracted %d chars from %s", len(text), domain)
+        if not text:
+            logger.warning("[extractor] trafilatura.extract returned empty for %s", url)
+        else:
+            logger.info("[extractor] URL extraction OK — %d chars from %s", len(text), domain)
         return text[:5000], domain
     except Exception as exc:
-        logger.warning("URL extraction failed for %s: %s", url, exc)
+        logger.warning("[extractor] URL extraction failed for %s: %s", url, exc)
         return "", domain
 
 
@@ -63,7 +70,9 @@ def extract_note(raw_content: str) -> str:
     Returns:
         Cleaned text, up to 5000 characters.
     """
-    return " ".join(raw_content.split())[:5000]
+    text = " ".join(raw_content.split())[:5000]
+    logger.info("[extractor] Note passthrough — %d chars", len(text))
+    return text
 
 
 def extract_screenshot(file_id: str) -> str:
@@ -82,6 +91,7 @@ def extract_screenshot(file_id: str) -> str:
         Extracted text string; empty string if no text detected or on error.
     """
     token = _bot_token()
+    logger.info("[extractor] Screenshot OCR — resolving file_id=%s", file_id)
     try:
         # Resolve file_id to a download path
         meta = httpx.get(
@@ -91,6 +101,7 @@ def extract_screenshot(file_id: str) -> str:
         )
         meta.raise_for_status()
         file_path = meta.json()["result"]["file_path"]
+        logger.info("[extractor] Screenshot file_path=%s", file_path)
 
         # Download image bytes
         img_resp = httpx.get(
@@ -99,6 +110,7 @@ def extract_screenshot(file_id: str) -> str:
         )
         img_resp.raise_for_status()
         image_bytes = img_resp.content
+        logger.info("[extractor] Downloaded %d bytes for OCR", len(image_bytes))
 
         # Gemini Vision OCR
         genai.configure(api_key=os.environ["GEMINI_API_KEY"])
@@ -109,9 +121,12 @@ def extract_screenshot(file_id: str) -> str:
             {"mime_type": "image/jpeg", "data": image_bytes},
         ])
         text = (response.text or "").strip()
-        logger.info("OCR extracted %d chars from screenshot", len(text))
+        if text:
+            logger.info("[extractor] OCR OK — %d chars extracted", len(text))
+        else:
+            logger.warning("[extractor] OCR returned empty text for file_id=%s", file_id)
         return text
 
     except Exception as exc:
-        logger.warning("Screenshot extraction failed for file_id=%s: %s", file_id, exc)
+        logger.warning("[extractor] Screenshot extraction failed for file_id=%s: %s", file_id, exc)
         return ""

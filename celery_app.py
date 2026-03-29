@@ -28,11 +28,22 @@ Starting workers (separate terminal):
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 from celery import Celery
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Ensure the project root is on sys.path so that 'bot', 'pipeline',
+# 'storage' are importable when the worker process starts.
+_project_root = str(Path(__file__).parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from logging_config import setup_logging  # noqa: E402
+setup_logging("worker")
 
 # ---------------------------------------------------------------------------
 # App instance

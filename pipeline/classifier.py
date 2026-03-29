@@ -62,8 +62,10 @@ def classify(*, text: str, content_type: str) -> dict:
     )
 
     if not text.strip():
+        logger.warning("[classifier] Empty text — skipping Gemini call, using fallback")
         return _empty_classification(content_type)
 
+    logger.info("[classifier] Sending %d chars to Gemini (type=%s)", len(text), content_type)
     prompt = _PROMPT_TEMPLATE.format(
         categories=", ".join(_CATEGORIES),
         content_type=content_type,
@@ -72,19 +74,24 @@ def classify(*, text: str, content_type: str) -> dict:
 
     try:
         response = model.generate_content(prompt)
+        logger.info("[classifier] Gemini response received (%d chars)", len(response.text or ""))
         result = json.loads(response.text)
 
-        # Normalise fields — guard against missing keys
-        return {
+        classified = {
             "title": str(result.get("title", "Untitled"))[:200],
             "summary": str(result.get("summary", ""))[:500],
             "key_insight": str(result.get("key_insight", ""))[:500],
             "category": result.get("category", "Other") if result.get("category") in _CATEGORIES else "Other",
             "tags": [str(t) for t in result.get("tags", [])][:4],
         }
+        logger.info(
+            "[classifier] Classification OK — title=%r  category=%s  tags=%s",
+            classified["title"], classified["category"], classified["tags"],
+        )
+        return classified
 
     except Exception as exc:
-        logger.warning("Classification failed: %s", exc)
+        logger.warning("[classifier] Classification failed: %s — using fallback", exc)
         return _empty_classification(content_type)
 
 

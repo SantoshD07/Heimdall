@@ -20,6 +20,7 @@ import logging
 import os
 
 import httpx
+from bot.replies import fmt_save
 from celery_app import celery
 from pipeline.classifier import classify
 from pipeline.extractor import extract_note, extract_screenshot, extract_url
@@ -81,7 +82,6 @@ def process_save(self, raw_id: str) -> None:
         update_raw_status(raw_id, "done")
 
         # ── Notify user ───────────────────────────────────────────────────────
-        from bot.replies import fmt_save
         _send_telegram(row["user_id"], fmt_save(classified))
         logger.info("[%s] Done", raw_id)
 
