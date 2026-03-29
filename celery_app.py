@@ -47,12 +47,18 @@ if _project_root not in sys.path:
 @celery_setup_logging.connect
 def configure_worker_logging(**kwargs):
     """
-    Called by Celery after it initialises its own logging.
-    Connecting here means our file handlers are added LAST and are not
-    overwritten by Celery's default handler setup.
+    Called by Celery when it sets up worker logging.
+    We clear whatever Celery has added so far and install our own
+    rotating-file + stream handlers instead.
+    Returning a non-empty value tells Celery to skip its default setup.
     """
+    import logging
     from logging_config import setup_logging
+
+    # Remove any handlers Celery attached before the signal fired.
+    logging.getLogger().handlers.clear()
     setup_logging("worker")
+    return True  # signals Celery: "logging is handled, skip your defaults"
 
 # ---------------------------------------------------------------------------
 # App instance
@@ -88,7 +94,4 @@ celery.conf.update(
     # On Windows, billiard cannot fork processes — solo pool runs tasks in the
     # same process to avoid the ValueError('not enough values to unpack') error.
     worker_pool="solo",
-    # Do not let Celery replace the root logger handlers — our signal-based
-    # setup (configure_worker_logging) owns the logging configuration.
-    worker_hijack_root_logger=False,
 )

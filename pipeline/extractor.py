@@ -114,7 +114,7 @@ def extract_screenshot(file_id: str) -> str:
 
         # Gemini Vision OCR
         genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content([
             "Extract all text visible in this image verbatim. "
             "Return only the extracted text with no commentary.",

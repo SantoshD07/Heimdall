@@ -15,6 +15,7 @@ import logging
 import os
 
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ def classify(*, text: str, content_type: str) -> dict:
     """
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
     model = genai.GenerativeModel(
-        "gemini-2.0-flash",
+        "gemini-1.5-flash",
         generation_config=genai.GenerationConfig(
             response_mime_type="application/json",
         ),
@@ -89,6 +90,11 @@ def classify(*, text: str, content_type: str) -> dict:
             classified["title"], classified["category"], classified["tags"],
         )
         return classified
+
+    except ResourceExhausted as exc:
+        # 429 — let Celery retry the whole task with backoff, don't silently swallow it
+        logger.warning("[classifier] Gemini 429 rate limit — will retry via Celery: %s", exc)
+        raise
 
     except Exception as exc:
         logger.warning("[classifier] Classification failed: %s — using fallback", exc)
