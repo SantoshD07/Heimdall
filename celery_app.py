@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 from celery import Celery
+from celery.signals import setup_logging as celery_setup_logging
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -42,8 +43,16 @@ _project_root = str(Path(__file__).parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from logging_config import setup_logging  # noqa: E402
-setup_logging("worker")
+
+@celery_setup_logging.connect
+def configure_worker_logging(**kwargs):
+    """
+    Called by Celery after it initialises its own logging.
+    Connecting here means our file handlers are added LAST and are not
+    overwritten by Celery's default handler setup.
+    """
+    from logging_config import setup_logging
+    setup_logging("worker")
 
 # ---------------------------------------------------------------------------
 # App instance
@@ -79,4 +88,7 @@ celery.conf.update(
     # On Windows, billiard cannot fork processes — solo pool runs tasks in the
     # same process to avoid the ValueError('not enough values to unpack') error.
     worker_pool="solo",
+    # Do not let Celery replace the root logger handlers — our signal-based
+    # setup (configure_worker_logging) owns the logging configuration.
+    worker_hijack_root_logger=False,
 )
