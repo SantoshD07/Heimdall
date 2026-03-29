@@ -1,96 +1,117 @@
 """
 pipeline/tasks.py — Celery tasks for the Heimdall processing pipeline.
 
-This module defines the async work that happens *after* a message has been
-saved to ``raw_saves``.  The FastAPI webhook handler calls
-``process_save.delay(raw_id)`` to enqueue the task and immediately returns;
-the actual processing runs here in a separate worker process.
+Flow per task:
+    1. Fetch raw_saves row from Supabase.
+    2. Mark status → 'processing'.
+    3. Extract text based on content_type (url / screenshot / note).
+    4. Classify extracted text with Gemini → structured dict.
+    5. Write to classified_saves.
+    6. Mark status → 'done'.
+    7. Send Telegram confirmation to the user.
 
-Current state (Step 3a):
-    The task is wired and logs what it would do, but no extraction or
-    classification happens yet.  Subsequent steps will fill in each branch:
-
-    Step 4  — URL branch: fetch page text with Trafilatura
-    Step 4  — Screenshot branch: download image via file_id, run Google Vision OCR
-    Step 4  — Note branch: passthrough / light clean
-    Step 5  — Classifier agent: structure extracted text → classified_saves
-
-Retry strategy:
-    Celery retries automatically on any exception, up to ``max_retries`` times
-    with exponential backoff (2^retry_count seconds).  This handles transient
-    network errors without manual intervention.
-
-    Retry #1 → 2s delay
-    Retry #2 → 4s delay
-    Retry #3 → 8s delay
-    After 3 failures the task is marked FAILED and the row status set to
-    'failed' in Supabase so it can be inspected or re-queued manually.
+On any exception, status → 'failed' and Celery retries with exponential
+backoff (2^retry_count seconds, max 3 retries).
 """
 
 from __future__ import annotations
 
 import logging
+import os
 
+import httpx
 from celery_app import celery
-from storage.db import get_raw_save, update_raw_status
+from pipeline.classifier import classify
+from pipeline.extractor import extract_note, extract_screenshot, extract_url
+from storage.db import get_raw_save, insert_classified, update_raw_status
 
 logger = logging.getLogger(__name__)
 
 
 @celery.task(
-    bind=True,           # ``self`` gives access to retry / request metadata
+    bind=True,
     max_retries=3,
     default_retry_delay=2,
     name="pipeline.process_save",
 )
 def process_save(self, raw_id: str) -> None:
     """
-    Entry point for processing a single saved item.
-
-    Fetches the ``raw_saves`` row by ``raw_id``, branches on ``content_type``,
-    and will eventually extract text and trigger classification.
+    Process a single saved item end-to-end.
 
     Args:
-        raw_id: UUID of the ``raw_saves`` row to process.
-
-    Raises:
-        celery.exceptions.Retry: transparently raised by ``self.retry()`` when
-            a retryable error occurs — Celery catches this internally.
+        raw_id: UUID of the raw_saves row to process.
     """
-    logger.info("[%s] Starting processing", raw_id)
+    logger.info("[%s] Starting pipeline", raw_id)
 
     try:
         row = get_raw_save(raw_id)
-
         if row is None:
-            # Row missing — nothing to retry, just bail out.
-            logger.error("[%s] Row not found in raw_saves, skipping", raw_id)
+            logger.error("[%s] Row not found, skipping", raw_id)
             return
 
         update_raw_status(raw_id, "processing")
         content_type = row["content_type"]
+        domain = None
 
-        logger.info("[%s] content_type=%s", raw_id, content_type)
-
+        # ── Step 4: extract ──────────────────────────────────────────────────
         if content_type == "url":
-            # Step 4: fetch page text with Trafilatura
-            logger.info("[%s] TODO: fetch URL and extract text", raw_id)
-
+            text, domain = extract_url(row["raw_content"])
         elif content_type == "screenshot":
-            # Step 4: download image via file_id → Google Vision OCR
-            logger.info("[%s] TODO: download image and run OCR", raw_id)
-
+            text = extract_screenshot(row["file_id"])
         elif content_type == "note":
-            # Step 4: passthrough — text is already in raw_content
-            logger.info("[%s] TODO: clean and pass through note text", raw_id)
+            text = extract_note(row["raw_content"])
+        else:
+            logger.warning("[%s] Unknown content_type=%s", raw_id, content_type)
+            text = row.get("raw_content") or ""
 
-        # Step 5: classifier agent will run here after extraction is wired
-        logger.info("[%s] TODO: run classifier agent", raw_id)
+        logger.info("[%s] Extracted %d chars (type=%s)", raw_id, len(text), content_type)
 
+        # ── Step 5: classify ─────────────────────────────────────────────────
+        classified = classify(text=text, content_type=content_type)
+        logger.info("[%s] Classified → %s", raw_id, classified["category"])
+
+        # ── Persist ──────────────────────────────────────────────────────────
+        insert_classified(
+            raw_id=raw_id,
+            user_id=row["user_id"],
+            domain=domain,
+            full_text=text,
+            **classified,
+        )
         update_raw_status(raw_id, "done")
-        logger.info("[%s] Processing complete", raw_id)
+
+        # ── Notify user ───────────────────────────────────────────────────────
+        from bot.replies import fmt_save
+        _send_telegram(row["user_id"], fmt_save(classified))
+        logger.info("[%s] Done", raw_id)
 
     except Exception as exc:
-        logger.warning("[%s] Error: %s — retry %d/%d", raw_id, exc, self.request.retries, self.max_retries)
+        logger.warning(
+            "[%s] Error: %s — retry %d/%d",
+            raw_id, exc, self.request.retries, self.max_retries,
+        )
         update_raw_status(raw_id, "failed", error_msg=str(exc))
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+
+
+def _send_telegram(user_id: int, text: str) -> None:
+    """
+    Send a message to a Telegram user via direct HTTP call.
+
+    Used from the Celery worker, which has no bot event loop.
+    The worker communicates back to the user by POSTing directly to the
+    Telegram Bot API.
+
+    Args:
+        user_id: Telegram chat ID (same as user ID for private chats).
+        text:    Message text (Markdown formatted).
+    """
+    token = os.environ["BOT_TOKEN"]
+    try:
+        httpx.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": user_id, "text": text, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.warning("Failed to send Telegram reply to %s: %s", user_id, exc)
