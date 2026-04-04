@@ -2,7 +2,7 @@
 pipeline/extractor.py — Content extraction for each save type.
 
 Three branches, each returning plain text:
-    url        — fetch the page with Trafilatura, return clean article text
+    url        — fetch the page with Trafilatura (or Instaloader for Instagram), return clean text
     note       — strip whitespace, return as-is
     screenshot — download image bytes from Telegram CDN, send to Gemini Vision
 """
@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from urllib.parse import urlparse
 
 import google.generativeai as genai
 import httpx
+import instaloader
 import trafilatura
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,62 @@ def _bot_token() -> str:
     if _BOT_TOKEN is None:
         _BOT_TOKEN = os.environ["BOT_TOKEN"]
     return _BOT_TOKEN
+
+
+_INSTAGRAM_SHORTCODE_RE = re.compile(r"/(?:p|reel|tv)/([A-Za-z0-9_-]+)")
+
+
+def _extract_instagram(url: str, domain: str) -> tuple[str, str]:
+    """
+    Fetch an Instagram post using Instaloader.
+
+    Works for public posts without credentials.
+    Set INSTAGRAM_USERNAME + INSTAGRAM_PASSWORD env vars to access private posts.
+
+    Returns:
+        (text, domain) — caption + metadata assembled into a text block.
+    """
+    match = _INSTAGRAM_SHORTCODE_RE.search(url)
+    if not match:
+        logger.warning("[extractor] Could not parse Instagram shortcode from %s", url)
+        return "", domain
+
+    shortcode = match.group(1)
+    logger.info("[extractor] Instagram shortcode=%s", shortcode)
+
+    L = instaloader.Instaloader(download_pictures=False, download_videos=False,
+                                 download_video_thumbnails=False, save_metadata=False,
+                                 quiet=True)
+
+    username = os.environ.get("INSTAGRAM_USERNAME")
+    password = os.environ.get("INSTAGRAM_PASSWORD")
+    if username and password:
+        try:
+            L.login(username, password)
+            logger.info("[extractor] Logged in to Instagram as %s", username)
+        except Exception as exc:
+            logger.warning("[extractor] Instagram login failed: %s", exc)
+
+    try:
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        parts: list[str] = []
+        if post.caption:
+            parts.append(post.caption)
+        parts.append(f"Type: {post.typename}")
+        parts.append(f"Likes: {post.likes}")
+        if post.location:
+            parts.append(f"Location: {post.location.name}")
+        owner = post.owner_profile
+        parts.append(f"Author: @{owner.username}")
+        if owner.full_name:
+            parts.append(f"Name: {owner.full_name}")
+        text = "\n".join(parts)
+        logger.info("[extractor] Instagram extraction OK — %d chars", len(text))
+        logger.info("[extractor] Extracted text preview: %s", text[:300].replace("\n", " "))
+        return text[:5000], domain
+    except Exception as exc:
+        logger.warning("[extractor] Instagram extraction failed for %s: %s", url, exc)
+        return "", domain
 
 
 def extract_url(url: str) -> tuple[str, str]:
@@ -42,6 +100,10 @@ def extract_url(url: str) -> tuple[str, str]:
     """
     domain = urlparse(url).netloc.replace("www.", "")
     logger.info("[extractor] Fetching URL: %s", url)
+
+    if "instagram.com" in domain:
+        return _extract_instagram(url, domain)
+
     try:
         downloaded = trafilatura.fetch_url(url)
         if not downloaded:

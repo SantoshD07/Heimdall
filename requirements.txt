@@ -7,4 +7,5 @@ supabase==2.7.4
 celery==5.4.0
 redis==5.0.8
 trafilatura==1.12.2
+instaloader==4.13.1
 google-generativeai==0.8.3
